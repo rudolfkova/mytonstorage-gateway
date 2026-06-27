@@ -1,0 +1,195 @@
+version: "3"
+
+dotenv:
+  - deploy/.env
+
+tasks:
+  build:
+    desc: Build gateway binary locally (debug)
+    cmds:
+      - mkdir -p bin
+      - go build -tags=debug -trimpath -o bin/mtpo-gateway ./cmd
+
+  run:
+    desc: Run gateway locally (expects postgres + tonutils-storage from task deploy:up)
+    cmds:
+      - go run -tags=debug ./cmd
+
+  deploy:init:
+    desc: Create deploy/.env from example
+    cmds:
+      - mkdir -p deploy
+      - |
+        if [ ! -f deploy/.env ]; then
+          cp deploy/.env.example deploy/.env
+          echo "Created deploy/.env from deploy/.env.example"
+        else
+          echo "deploy/.env already exists"
+        fi
+
+  deploy:up:
+    desc: Build and start local dev stack (postgres + tonutils-storage + gateway)
+    deps:
+      - deploy:init
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+
+  deploy:down:
+    desc: Stop local dev stack (keep volumes)
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml down
+
+  deploy:reset:
+    desc: Stop local dev stack and remove volumes (postgres + bags data)
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml down -v
+
+  deploy:ps:
+    desc: Show compose service status
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+
+  deploy:logs:
+    desc: Follow logs for all compose services
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f
+
+  deploy:logs:gateway:
+    desc: Follow gateway logs only
+    cmds:
+      - docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f gateway
+
+  deploy:health:
+    desc: Check gateway /api/v1/health endpoint
+    cmds:
+      - |
+        PORT="${GATEWAY_PORT:-9093}"
+        curl -fsS "http://127.0.0.1:${PORT}/api/v1/health"
+        echo
+
+  hub:init:
+    desc: Create deploy/.env.hub from example
+    cmds:
+      - mkdir -p deploy
+      - |
+        if [ ! -f deploy/.env.hub ]; then
+          cp deploy/.env.hub.example deploy/.env.hub
+          echo "Created deploy/.env.hub from deploy/.env.hub.example"
+        else
+          echo "deploy/.env.hub already exists"
+        fi
+
+  hub:up:
+    desc: Pull and start deploy stack from Docker Hub images (no local build)
+    deps:
+      - hub:init
+    cmds:
+      - docker compose --env-file deploy/.env.hub -f deploy/docker-compose.hub.yml up -d
+
+  hub:down:
+    desc: Stop Docker Hub deploy stack (keep volumes)
+    cmds:
+      - docker compose --env-file deploy/.env.hub -f deploy/docker-compose.hub.yml down
+
+  hub:ps:
+    desc: Show Docker Hub compose service status
+    cmds:
+      - docker compose --env-file deploy/.env.hub -f deploy/docker-compose.hub.yml ps
+
+  hub:logs:
+    desc: Follow logs for Docker Hub compose services
+    cmds:
+      - docker compose --env-file deploy/.env.hub -f deploy/docker-compose.hub.yml logs -f
+
+  hub:logs:gateway:
+    desc: Follow gateway logs only (Docker Hub stack)
+    cmds:
+      - docker compose --env-file deploy/.env.hub -f deploy/docker-compose.hub.yml logs -f gateway
+
+  hub:health:
+    desc: Check gateway /api/v1/health endpoint (Docker Hub stack)
+    cmds:
+      - |
+        set -a
+        # shellcheck disable=SC1091
+        . deploy/.env.hub
+        set +a
+        PORT="${GATEWAY_PORT:-9093}"
+        curl -fsS "http://127.0.0.1:${PORT}/api/v1/health"
+        echo
+
+  image:build:gateway:
+    desc: Build gateway image locally (set GATEWAY_IMAGE; optional BUILD_TAGS for release leave empty)
+    cmds:
+      - |
+        if [ -z "${GATEWAY_IMAGE:-}" ]; then
+          echo "GATEWAY_IMAGE is required, e.g. GATEWAY_IMAGE=user/mytonstorage-gateway:latest task image:build:gateway"
+          exit 1
+        fi
+      - |
+        docker build -f Dockerfile \
+          --build-arg BUILD_TAGS="${BUILD_TAGS:-}" \
+          -t "${GATEWAY_IMAGE}" .
+
+  image:build:tonutils-storage:
+    desc: Build tonutils-storage image locally (set TONUTILS_STORAGE_IMAGE)
+    cmds:
+      - |
+        if [ -z "${TONUTILS_STORAGE_IMAGE:-}" ]; then
+          echo "TONUTILS_STORAGE_IMAGE is required, e.g. TONUTILS_STORAGE_IMAGE=user/mytonutils-storage:v1.5.1 task image:build:tonutils-storage"
+          exit 1
+        fi
+      - |
+        docker build -f deploy/tonutils-storage.Dockerfile \
+          --build-arg TONUTILS_STORAGE_VERSION="${TONUTILS_STORAGE_VERSION:-v1.5.1}" \
+          -t "${TONUTILS_STORAGE_IMAGE}" \
+          deploy
+
+  image:build:
+    desc: Build gateway and tonutils-storage images (set GATEWAY_IMAGE and TONUTILS_STORAGE_IMAGE)
+    deps:
+      - image:build:gateway
+      - image:build:tonutils-storage
+
+  image:push:gateway:
+    desc: Push prebuilt gateway image (set GATEWAY_IMAGE)
+    cmds:
+      - |
+        if [ -z "${GATEWAY_IMAGE:-}" ]; then
+          echo "GATEWAY_IMAGE is required"
+          exit 1
+        fi
+      - docker push "${GATEWAY_IMAGE}"
+
+  image:push:tonutils-storage:
+    desc: Push prebuilt tonutils-storage image (set TONUTILS_STORAGE_IMAGE)
+    cmds:
+      - |
+        if [ -z "${TONUTILS_STORAGE_IMAGE:-}" ]; then
+          echo "TONUTILS_STORAGE_IMAGE is required"
+          exit 1
+        fi
+      - docker push "${TONUTILS_STORAGE_IMAGE}"
+
+  image:push:
+    desc: Push gateway and tonutils-storage images
+    deps:
+      - image:push:gateway
+      - image:push:tonutils-storage
+
+  image:build:push:
+    desc: Build and push gateway + tonutils-storage images
+    cmds:
+      - task: image:build
+      - task: image:push
+
+  mod:tidy:
+    desc: go mod tidy
+    cmds:
+      - go mod tidy
+
+  test:build:
+    desc: Verify release and debug builds compile
+    cmds:
+      - go build -o /dev/null ./cmd
+      - go build -tags=debug -o /dev/null ./cmd

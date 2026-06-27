@@ -15,6 +15,39 @@ This gateway service provides public access to files stored on TON Storage netwo
 - Exposes REST API endpoints for public and administrative access
 - Collects metrics via **Prometheus**
 
+## Local development (Docker)
+
+**Requires:** [Docker](https://docs.docker.com/), [Task](https://taskfile.dev), Go 1.24+ (for local builds outside containers).
+
+Stack in containers: **PostgreSQL**, **tonutils-storage** (v1.5.1), **gateway**.
+
+```bash
+task deploy:up
+task deploy:health
+task deploy:logs
+task deploy:down
+task deploy:reset   # remove volumes
+```
+
+API: `http://localhost:9093` (port set via `GATEWAY_PORT` in `deploy/.env`).
+
+Config: copy `deploy/.env.example` → `deploy/.env` or run `task deploy:init`.  
+`DB_USER` must be **pguser** — required by `db/init.sql`.
+
+## Deploy on VPS (Docker Hub)
+
+```bash
+# dev machine
+GATEWAY_IMAGE=rudolfkova/mytonstorage-gateway:latest \
+TONUTILS_STORAGE_IMAGE=rudolfkova/mytonutils-storage:v1.5.1 \
+task image:build:push
+
+# VPS
+task hub:init && nano deploy/.env.hub && task hub:up && task hub:health
+```
+
+See [deploy/README.md](deploy/README.md) for details.
+
 ## Dev:
 ### VS Code Configuration
 Create `.vscode/launch.json`:
@@ -50,8 +83,12 @@ Create `.vscode/launch.json`:
 │   ├── services/                 # Business logic. File browsing, streaming and content moderation (reports, bans)
 │   ├── templates/                # HTML templates wrapper
 ├── bruno-collection/             # Bruno API testing collection
+├── db/                           # PostgreSQL schema (moderation)
+├── deploy/                       # Docker Compose, .env.example
 ├── scripts/                      # Setup and utility scripts
 ├── templates/                    # HTML template files
+├── Dockerfile
+└── Taskfile.yml
 ```
 
 ## API Endpoints

@@ -1,0 +1,68 @@
+name: mytonstorage-gateway
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+      POSTGRES_DB: "${DB_NAME}"
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tonutils-storage:
+    image: ${TONUTILS_STORAGE_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      TONUTILS_STORAGE_EXTERNAL_IP: "${TONUTILS_STORAGE_EXTERNAL_IP:-}"
+      TONUTILS_STORAGE_UDP_PORT: "${TONUTILS_STORAGE_UDP_PORT:-47432}"
+    command:
+      - --daemon
+      - --db
+      - /data/db
+      - --api
+      - 0.0.0.0:13474
+      - --api-login
+      - "${TON_STORAGE_LOGIN}"
+      - --api-password
+      - "${TON_STORAGE_PASSWORD}"
+    ports:
+      - "${TONUTILS_STORAGE_API_PORT:-13475}:13474"
+      - "${TONUTILS_STORAGE_UDP_PORT:-47432}:${TONUTILS_STORAGE_UDP_PORT:-47432}/udp"
+    volumes:
+      - tonstorage_db:/data/db
+      - bags_data:/bags
+
+  gateway:
+    image: ${GATEWAY_IMAGE}
+    pull_policy: always
+    restart: unless-stopped
+    env_file:
+      - .env.hub
+    environment:
+      SYSTEM_PORT: "${GATEWAY_PORT:-9093}"
+      TEMPLATES_PATH: /templates
+      DB_HOST: postgres
+      TON_STORAGE_BASE_URL: "http://tonutils-storage:13474"
+    ports:
+      - "${GATEWAY_PORT:-9093}:${GATEWAY_PORT:-9093}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tonutils-storage:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  tonstorage_db:
+  bags_data:

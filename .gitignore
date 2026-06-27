@@ -5,8 +5,12 @@
 /.vscode
 /.vscode/*
 /.DS_Store
+/deploy/.env
+/deploy/.env.hub
+/bin/
 /.env.*
 *.env
 *mtpo-backend
+*mtpo-gateway
 *.log
 *myapp

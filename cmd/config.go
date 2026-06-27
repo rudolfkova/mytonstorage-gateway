@@ -50,12 +50,17 @@ type Postgress struct {
 	Name     string `env:"DB_NAME" required:"true"`
 }
 
+type Templates struct {
+	Path string `env:"TEMPLATES_PATH" envDefault:"../templates"`
+}
+
 type Config struct {
 	System                System
 	TONStorage            TONStorage
 	RemoteTONStorageCache RemoteTONStorageCache
 	Metrics               Metrics
 	DB                    Postgress
+	Templates             Templates
 }
 
 func loadConfig() *Config {
@@ -74,6 +79,9 @@ func loadConfig() *Config {
 	}
 	if err := env.Parse(&cfg.DB); err != nil {
 		log.Fatalf("Failed to parse db config: %v", err)
+	}
+	if err := env.Parse(&cfg.Templates); err != nil {
+		log.Fatalf("Failed to parse templates config: %v", err)
 	}
 
 	return cfg

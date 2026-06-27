@@ -121,7 +121,7 @@ func run() (err error) {
 	// TODO:
 	// reportsSvc = reportsService.NewCacheMiddleware(reportsSvc)
 
-	templatesSvc, err := htmlTemplates.New("../templates")
+	templatesSvc, err := htmlTemplates.New(config.Templates.Path)
 	if err != nil {
 		logger.Error("failed to initialize templates", slog.String("error", err.Error()))
 		return
