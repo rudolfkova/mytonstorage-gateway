@@ -44,7 +44,7 @@ const parentTemplate = `<!doctype html>
 <div class="notice-header">
   <span class="warning-icon">⚠️</span>
   <span class="notice-text">This content is not part of <a href="https://mytonstorage.org">mytonstorage.org</a> website. Please be careful.</span>
-  <a class="report-link" href="https://t.me/report_bot" target="_blank">Report</a>
+  <a class="report-link" href="https://t.me/bagidreport_bot" target="_blank">Report</a>
 </div>
 
 <iframe class="wrapped-iframe" sandbox="%s" %s></iframe>
