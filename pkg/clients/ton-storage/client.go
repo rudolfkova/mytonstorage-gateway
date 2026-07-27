@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,10 +20,12 @@ var ErrNotFound = errors.New("not found")
 
 type Client interface {
 	GetBag(ctx context.Context, bagId string) (*BagDetailed, error)
+	AddBag(ctx context.Context, bagId string, downloadAll bool) error
 }
 
 type client struct {
 	base        string
+	rootPath    string
 	client      http.Client
 	credentials *Credentials
 }
@@ -41,6 +44,43 @@ func (c *client) GetBag(ctx context.Context, bagId string) (*BagDetailed, error)
 		return nil, fmt.Errorf("too old tonutils-storage version, please update")
 	}
 	return &res, nil
+}
+
+func (c *client) AddBag(ctx context.Context, bagId string, downloadAll bool) error {
+	type request struct {
+		BagID       string   `json:"bag_id"`
+		Path        string   `json:"path"`
+		DownloadAll bool     `json:"download_all"`
+		Files       []uint32 `json:"files"`
+	}
+
+	var res Result
+	if err := c.doRequest(ctx, "POST", "/api/v1/add", request{
+		BagID:       bagId,
+		Path:        c.rootPath,
+		DownloadAll: downloadAll,
+	}, &res); err != nil {
+		if isAlreadyExistsError(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to do request: %w", err)
+	}
+
+	if !res.Ok {
+		if isAlreadyExistsError(errors.New(res.Error)) {
+			return nil
+		}
+		return fmt.Errorf("error in response: %s", res.Error)
+	}
+	return nil
+}
+
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already") || strings.Contains(msg, "exist")
 }
 
 func (c *client) doRequest(ctx context.Context, method, url string, req, resp any) error {
@@ -83,9 +123,10 @@ func (c *client) doRequest(ctx context.Context, method, url string, req, resp an
 	return nil
 }
 
-func NewClient(base string, credentials *Credentials) Client {
+func NewClient(base, rootPath string, credentials *Credentials) Client {
 	return &client{
-		base: base,
+		base:     base,
+		rootPath: rootPath,
 		client: http.Client{
 			Timeout: 15 * time.Second,
 		},

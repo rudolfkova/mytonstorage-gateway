@@ -29,6 +29,7 @@ type TONStorage struct {
 	BaseURL  string `env:"TON_STORAGE_BASE_URL" required:"true"`
 	Login    string `env:"TON_STORAGE_LOGIN" required:"true"`
 	Password string `env:"TON_STORAGE_PASSWORD" required:"true"`
+	BagsPath string `env:"TON_STORAGE_BAGS_PATH" envDefault:"/bags"`
 }
 
 type RemoteTONStorageCache struct {

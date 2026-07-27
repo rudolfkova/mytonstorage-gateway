@@ -98,6 +98,7 @@ func run() (err error) {
 	}
 	storage := tonstorage.NewClient(
 		config.TONStorage.BaseURL,
+		config.TONStorage.BagsPath,
 		&creds)
 
 	rBagsCache := remotetonstorage.NewBagsCache(config.RemoteTONStorageCache.MaxCacheEntries)

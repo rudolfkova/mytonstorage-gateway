@@ -1,10 +1,16 @@
 package constants
 
+import "time"
+
 const (
 	MaxPathLength              = 4096
 	MaxFileServeSize           = 50 << 20 // 50 MiB
 	MaxHTMLFileSize            = 5 << 20  // 5 MiB
 	FileDownloadTimeoutSeconds = 60 * 3   // 3 minutes
+
+	// Header load via companion tonutils-storage after POST /api/v1/add
+	BagHeaderLoadTimeout      = 30 * time.Second
+	BagHeaderLoadPollInterval = 500 * time.Millisecond
 )
 
 // Sorting constants

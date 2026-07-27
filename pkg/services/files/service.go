@@ -3,11 +3,14 @@ package files
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	remotes "mytonstorage-gateway/pkg/clients/remote-ton-storage"
 	tonstorageClient "mytonstorage-gateway/pkg/clients/ton-storage"
@@ -22,6 +25,8 @@ type service struct {
 	tonstorage       storage
 	remoteTonStorage remotes.Client
 	logger           *slog.Logger
+	ensureMu         sync.Mutex
+	ensureLocks      map[string]*sync.Mutex
 }
 
 type reportsDb interface {
@@ -30,6 +35,7 @@ type reportsDb interface {
 
 type storage interface {
 	GetBag(ctx context.Context, bagId string) (*tonstorageClient.BagDetailed, error)
+	AddBag(ctx context.Context, bagId string, downloadAll bool) error
 }
 
 type Files interface {
@@ -57,7 +63,77 @@ func (s *service) GetPathInfo(ctx context.Context, bagID, path string) (private.
 		return info, nil
 	}
 
+	if err := s.ensureBagInStorage(ctx, bagID, log); err != nil {
+		log.Info("ensure bag in local storage failed, falling back to remote",
+			slog.String("error", err.Error()))
+	} else if info, err := s.getFromLocalStorage(ctx, bagID, path, log); err == nil {
+		return info, nil
+	} else {
+		log.Info("local storage still unavailable after ensure, falling back to remote",
+			slog.String("error", err.Error()))
+	}
+
 	return s.getFromRemoteStorage(ctx, bagID, path, log)
+}
+
+func (s *service) ensureBagInStorage(ctx context.Context, bagID string, log *slog.Logger) error {
+	lock := s.getEnsureLock(bagID)
+	lock.Lock()
+	defer lock.Unlock()
+	return s.doEnsureBagInStorage(ctx, bagID, log)
+}
+
+func (s *service) getEnsureLock(bagID string) *sync.Mutex {
+	s.ensureMu.Lock()
+	defer s.ensureMu.Unlock()
+	if s.ensureLocks == nil {
+		s.ensureLocks = make(map[string]*sync.Mutex)
+	}
+	if m, ok := s.ensureLocks[bagID]; ok {
+		return m
+	}
+	m := &sync.Mutex{}
+	s.ensureLocks[bagID] = m
+	return m
+}
+
+func (s *service) doEnsureBagInStorage(ctx context.Context, bagID string, log *slog.Logger) error {
+	start := time.Now()
+
+	if err := s.tonstorage.AddBag(ctx, bagID, false); err != nil {
+		// Bag may already be present (race / previous request) — continue to wait for header.
+		if _, getErr := s.tonstorage.GetBag(ctx, bagID); getErr != nil {
+			log.Info("failed to add bag to local storage", slog.String("error", err.Error()))
+			return fmt.Errorf("add bag: %w", err)
+		}
+		log.Info("add bag reported error but bag is present, waiting for header",
+			slog.String("add_error", err.Error()))
+	} else {
+		log.Info("bag added to local storage")
+	}
+
+	deadline := time.Now().Add(constants.BagHeaderLoadTimeout)
+	for {
+		bag, err := s.tonstorage.GetBag(ctx, bagID)
+		if err == nil && (bag.HeaderLoaded || len(bag.Files) > 0) {
+			log.Info("bag header loaded in local storage",
+				slog.Duration("elapsed", time.Since(start)))
+			return nil
+		}
+		if err != nil && !errors.Is(err, tonstorageClient.ErrNotFound) {
+			log.Info("waiting for bag header", slog.String("error", err.Error()))
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for bag header after %s", constants.BagHeaderLoadTimeout)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(constants.BagHeaderLoadPollInterval):
+		}
+	}
 }
 
 func (s *service) getFromLocalStorage(ctx context.Context, bagID, path string, log *slog.Logger) (private.FolderInfo, error) {
@@ -261,5 +337,6 @@ func NewService(
 		tonstorage:       tonstorage,
 		remoteTonStorage: rstorage,
 		logger:           logger,
+		ensureLocks:      make(map[string]*sync.Mutex),
 	}
 }
