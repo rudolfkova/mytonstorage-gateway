@@ -27,6 +27,25 @@ func okHandler(c *fiber.Ctx) error {
 	})
 }
 
+// shouldServeLoadingShell is true for browser document navigations without ?direct=1.
+// API clients (curl/Bruno with Accept */* and no Sec-Fetch-Dest) skip the shell.
+func shouldServeLoadingShell(c *fiber.Ctx) bool {
+	if c.Query("direct") == "1" {
+		return false
+	}
+
+	secFetchDest := c.Get("Sec-Fetch-Dest")
+	if secFetchDest == "document" {
+		return true
+	}
+	if secFetchDest != "" {
+		return false
+	}
+
+	accept := c.Get("Accept")
+	return strings.Contains(accept, "text/html")
+}
+
 func errorHandler(c *fiber.Ctx, err error) error {
 	if e, ok := err.(*fiber.Error); ok {
 		return c.Status(e.Code).JSON(fiber.Map{

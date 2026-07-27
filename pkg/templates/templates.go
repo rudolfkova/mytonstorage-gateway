@@ -28,6 +28,7 @@ type htmlTemplates struct {
 type Templates interface {
 	ContentType(filename string) ContentType
 	HtmlFilesListWithTemplate(f private.FolderInfo, path string) (string, error)
+	HtmlLoadingPage() (string, error)
 }
 
 // ContentType returns the appropriate Content-Type header and value based on the file extension.
@@ -153,6 +154,10 @@ func (t *htmlTemplates) HtmlFilesListWithTemplate(f private.FolderInfo, path str
 	}
 
 	return t.renderTemplate("file_list.html", &data)
+}
+
+func (t *htmlTemplates) HtmlLoadingPage() (string, error) {
+	return t.renderTemplate("loading.html", nil)
 }
 
 func (t *htmlTemplates) renderTemplate(templateName string, data any) (string, error) {

@@ -34,6 +34,7 @@ type reports interface {
 type templatesSvc interface {
 	ContentType(filename string) htmlTemplates.ContentType
 	HtmlFilesListWithTemplate(f private.FolderInfo, path string) (string, error)
+	HtmlLoadingPage() (string, error)
 }
 
 type errorResponse struct {

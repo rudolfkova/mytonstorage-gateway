@@ -246,6 +246,15 @@ func (h *handler) getBagInfoResponse(c *fiber.Ctx, bagid, path string, log *slog
 		return errorHandler(c, err)
 	}
 
+	if shouldServeLoadingShell(c) {
+		html, rerr := h.templates.HtmlLoadingPage()
+		if rerr != nil {
+			log.Error("failed to render loading template", slog.String("error", rerr.Error()))
+			return errorHandler(c, fiber.NewError(fiber.StatusInternalServerError, ""))
+		}
+		return c.Type("html").SendString(html)
+	}
+
 	bagInfo, err := h.files.GetPathInfo(c.Context(), bagid, path)
 	if err != nil {
 		mapped := mapPathInfoError(err, bagInfo, log)
