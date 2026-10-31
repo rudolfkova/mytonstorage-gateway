@@ -11,6 +11,7 @@ const (
 	// Header load via companion tonutils-storage after POST /api/v1/add
 	BagHeaderLoadTimeout      = 30 * time.Second
 	BagHeaderLoadPollInterval = 500 * time.Millisecond
+	BagHeaderFailCacheTTL     = 2 * time.Minute
 )
 
 // Sorting constants

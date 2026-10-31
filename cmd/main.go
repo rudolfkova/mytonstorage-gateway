@@ -130,7 +130,9 @@ func run() (err error) {
 
 	// HTTP Server
 	accessTokens := strings.Split(config.System.AccessTokens, ";")
-	app := fiber.New()
+	app := fiber.New(fiber.Config{
+		ProxyHeader: "X-Real-IP",
+	})
 	server := httpServer.New(
 		app,
 		filesSvc,

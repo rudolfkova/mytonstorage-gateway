@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -20,13 +21,23 @@ import (
 	"mytonstorage-gateway/pkg/models/private"
 )
 
+type headerFlight struct {
+	done chan struct{}
+	err  error
+}
+
 type service struct {
-	reports          reportsDb
-	tonstorage       storage
-	remoteTonStorage remotes.Client
-	logger           *slog.Logger
-	ensureMu         sync.Mutex
-	ensureLocks      map[string]*sync.Mutex
+	reports            reportsDb
+	tonstorage         storage
+	remoteTonStorage   remotes.Client
+	logger             *slog.Logger
+	headerLoadTimeout  time.Duration
+	headerPollInterval time.Duration
+	headerFailTTL      time.Duration
+	ensureMu           sync.Mutex
+	flights            map[string]*headerFlight
+	failMu             sync.Mutex
+	failUntil          map[string]time.Time
 }
 
 type reportsDb interface {
@@ -41,6 +52,14 @@ type storage interface {
 type Files interface {
 	GetPathInfo(ctx context.Context, bagID, path string) (private.FolderInfo, error)
 }
+
+// errFileNotOnDisk means the bag header is already in the local daemon, but the
+// requested file bytes are not on disk. Callers must fall back to remote streaming
+// and must not treat this as a client-facing error.
+var (
+	errFileNotOnDisk           = errors.New("file not present locally")
+	errBagHeaderRecentlyFailed = errors.New("bag header recently failed")
+)
 
 func (s *service) GetPathInfo(ctx context.Context, bagID, path string) (private.FolderInfo, error) {
 	log := s.logger.With(
@@ -59,15 +78,22 @@ func (s *service) GetPathInfo(ctx context.Context, bagID, path string) (private.
 		return private.FolderInfo{}, models.NewAppError(models.NotAcceptableErrorCode, "bag is banned")
 	}
 
-	if info, err := s.getFromLocalStorage(ctx, bagID, path, log); err == nil {
+	info, err := s.getFromLocalStorage(ctx, bagID, path, log)
+	if err == nil {
 		return info, nil
+	}
+	if errors.Is(err, errFileNotOnDisk) {
+		log.Info("file not present locally, falling back to remote")
+		return s.getFromRemoteStorage(ctx, bagID, path, log)
 	}
 
 	if err := s.ensureBagInStorage(ctx, bagID, log); err != nil {
 		log.Info("ensure bag in local storage failed, falling back to remote",
 			slog.String("error", err.Error()))
-	} else if info, err := s.getFromLocalStorage(ctx, bagID, path, log); err == nil {
+	} else if info, err = s.getFromLocalStorage(ctx, bagID, path, log); err == nil {
 		return info, nil
+	} else if errors.Is(err, errFileNotOnDisk) {
+		log.Info("file not present locally after header load, falling back to remote")
 	} else {
 		log.Info("local storage still unavailable after ensure, falling back to remote",
 			slog.String("error", err.Error()))
@@ -77,24 +103,76 @@ func (s *service) GetPathInfo(ctx context.Context, bagID, path string) (private.
 }
 
 func (s *service) ensureBagInStorage(ctx context.Context, bagID string, log *slog.Logger) error {
-	lock := s.getEnsureLock(bagID)
-	lock.Lock()
-	defer lock.Unlock()
-	return s.doEnsureBagInStorage(ctx, bagID, log)
+	if s.headerRecentlyFailed(bagID) {
+		return errBagHeaderRecentlyFailed
+	}
+
+	flight, leader := s.getOrStartFlight(bagID)
+	if leader {
+		go s.runHeaderFlight(flight, bagID, log)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-flight.done:
+		return flight.err
+	}
 }
 
-func (s *service) getEnsureLock(bagID string) *sync.Mutex {
+func (s *service) runHeaderFlight(flight *headerFlight, bagID string, log *slog.Logger) {
+	loadCtx, cancel := context.WithTimeout(context.Background(), s.headerLoadTimeout)
+	defer cancel()
+
+	err := s.doEnsureBagInStorage(loadCtx, bagID, log)
+	flight.err = err
+	if err != nil {
+		s.rememberHeaderFail(bagID)
+	}
+	close(flight.done)
+	s.dropFlight(bagID, flight)
+}
+
+func (s *service) getOrStartFlight(bagID string) (*headerFlight, bool) {
 	s.ensureMu.Lock()
 	defer s.ensureMu.Unlock()
-	if s.ensureLocks == nil {
-		s.ensureLocks = make(map[string]*sync.Mutex)
+
+	if f, ok := s.flights[bagID]; ok {
+		return f, false
 	}
-	if m, ok := s.ensureLocks[bagID]; ok {
-		return m
+
+	f := &headerFlight{done: make(chan struct{})}
+	s.flights[bagID] = f
+	return f, true
+}
+
+func (s *service) dropFlight(bagID string, flight *headerFlight) {
+	s.ensureMu.Lock()
+	defer s.ensureMu.Unlock()
+	if s.flights[bagID] == flight {
+		delete(s.flights, bagID)
 	}
-	m := &sync.Mutex{}
-	s.ensureLocks[bagID] = m
-	return m
+}
+
+func (s *service) headerRecentlyFailed(bagID string) bool {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+
+	until, ok := s.failUntil[bagID]
+	if !ok {
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	delete(s.failUntil, bagID)
+	return false
+}
+
+func (s *service) rememberHeaderFail(bagID string) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	s.failUntil[bagID] = time.Now().Add(s.headerFailTTL)
 }
 
 func (s *service) doEnsureBagInStorage(ctx context.Context, bagID string, log *slog.Logger) error {
@@ -112,7 +190,7 @@ func (s *service) doEnsureBagInStorage(ctx context.Context, bagID string, log *s
 		log.Info("bag added to local storage")
 	}
 
-	deadline := time.Now().Add(constants.BagHeaderLoadTimeout)
+	deadline := time.Now().Add(s.headerLoadTimeout)
 	for {
 		bag, err := s.tonstorage.GetBag(ctx, bagID)
 		if err == nil && (bag.HeaderLoaded || len(bag.Files) > 0) {
@@ -125,13 +203,13 @@ func (s *service) doEnsureBagInStorage(ctx context.Context, bagID string, log *s
 		}
 
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for bag header after %s", constants.BagHeaderLoadTimeout)
+			return fmt.Errorf("timeout waiting for bag header after %s", s.headerLoadTimeout)
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(constants.BagHeaderLoadPollInterval):
+		case <-time.After(s.headerPollInterval):
 		}
 	}
 }
@@ -162,7 +240,14 @@ func (s *service) getFromLocalStorage(ctx context.Context, bagID, path string, l
 		return !f.IsFolder && f.Name == fileName
 	}) {
 		if s.isSingleFile(info.Files, path) {
-			info.SingleFilePath = filepath.Join(bag.Path, bag.DirName, path)
+			localPath := filepath.Join(bag.Path, bag.DirName, path)
+			if _, statErr := os.Stat(localPath); statErr != nil {
+				log.Info("file not present locally",
+					slog.String("path", localPath),
+					slog.String("error", statErr.Error()))
+				return private.FolderInfo{}, errFileNotOnDisk
+			}
+			info.SingleFilePath = localPath
 		}
 	} else if len(info.Files) == 0 {
 		log.Warn("path not found in local", slog.String("path", path))
@@ -333,10 +418,14 @@ func NewService(
 	logger *slog.Logger,
 ) Files {
 	return &service{
-		reports:          reports,
-		tonstorage:       tonstorage,
-		remoteTonStorage: rstorage,
-		logger:           logger,
-		ensureLocks:      make(map[string]*sync.Mutex),
+		reports:            reports,
+		tonstorage:         tonstorage,
+		remoteTonStorage:   rstorage,
+		logger:             logger,
+		headerLoadTimeout:  constants.BagHeaderLoadTimeout,
+		headerPollInterval: constants.BagHeaderLoadPollInterval,
+		headerFailTTL:      constants.BagHeaderFailCacheTTL,
+		flights:            make(map[string]*headerFlight),
+		failUntil:          make(map[string]time.Time),
 	}
 }

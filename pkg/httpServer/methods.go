@@ -1,6 +1,7 @@
 package httpServer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gofiber/adaptor/v2"
 	"github.com/gofiber/fiber/v2"
@@ -255,7 +257,10 @@ func (h *handler) getBagInfoResponse(c *fiber.Ctx, bagid, path string, log *slog
 		return c.Type("html").SendString(html)
 	}
 
-	bagInfo, err := h.files.GetPathInfo(c.Context(), bagid, path)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(constants.FileDownloadTimeoutSeconds)*time.Second)
+	defer cancel()
+
+	bagInfo, err := h.files.GetPathInfo(ctx, bagid, path)
 	if err != nil {
 		mapped := mapPathInfoError(err, bagInfo, log)
 		return errorHandler(c, mapped)
