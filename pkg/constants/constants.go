@@ -12,6 +12,9 @@ const (
 	BagHeaderLoadTimeout      = 30 * time.Second
 	BagHeaderLoadPollInterval = 500 * time.Millisecond
 	BagHeaderFailCacheTTL     = 2 * time.Minute
+
+	RemoteDownloaderTimeout   = 10 * time.Second
+	RemoteTorrentFailCacheTTL = 2 * time.Minute
 )
 
 // Sorting constants
